@@ -4836,9 +4836,6 @@ struct AffineToStableHLORaisingPass
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
                                      prefer_while_raising,
                                      strip_llvm_debuginfo};
-    flattenViewedScratch(getOperation());
-    expandBufferBranches(getOperation());
-    peelDynamicParallelDims(getOperation());
     std::vector<func::FuncOp> funcs;
 
     auto context = getOperation()->getContext();
@@ -4874,6 +4871,7 @@ struct AffineToStableHLORaisingPass
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
       flattenViewedScratch(func);
+      expandBufferBranches(func);
       peelDynamicParallelDims(func);
     }
 
@@ -4897,6 +4895,7 @@ struct AffineToStableHLORaisingPass
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
       flattenViewedScratch(g);
+      expandBufferBranches(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
