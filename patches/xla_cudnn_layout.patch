@@ -1,3 +1,4 @@
+diff --git a/xla/backends/gpu/transforms/layout_assignment.cc b/xla/backends/gpu/transforms/layout_assignment.cc
 --- a/xla/backends/gpu/transforms/layout_assignment.cc
 +++ b/xla/backends/gpu/transforms/layout_assignment.cc
 @@ -549,6 +549,30 @@
@@ -31,21 +32,3 @@
      } else if (HloPredicateIsOp<HloOpcode::kTranspose>(instruction)) {
        const HloInstruction* operand = instruction->operand(0);
        if ((HloPredicateIsNotOp<HloOpcode::kDot>(operand)) ||
---- a/xla/hlo/transforms/simplifiers/hlo_computation_deduplicator.cc
-+++ b/xla/hlo/transforms/simplifiers/hlo_computation_deduplicator.cc
-@@ -96,6 +96,15 @@
-         ContainsLargeConstants(comp)) {
-       continue;
-     }
-+    // A fusion computation is owned 1:1 by its fusion instruction
-+    // (HloComputation::FusionInstruction()), so it cannot be shared. Merging
-+    // two of them repoints the callers but leaves the surviving computation's
-+    // FusionInstruction() pointing at only one, which the verifier's
-+    // CheckFusionInstruction() then rejects.
-+    if (!mark_fusion_duplications_ && comp->IsFusionComputation()) {
-+      continue;
-+    }
-+
-     // Don't deduplicate collectives and non-collectives.
-     if (absl::c_any_of(
-             comp->caller_instructions(), [](const HloInstruction* instr) {
