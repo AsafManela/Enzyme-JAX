@@ -1,0 +1,51 @@
+--- a/xla/backends/gpu/transforms/layout_assignment.cc
++++ b/xla/backends/gpu/transforms/layout_assignment.cc
+@@ -549,6 +549,30 @@
+       ABSL_RETURN_IF_ERROR(SetOperandLayout(op0_shape, instruction, 0));
+       ABSL_RETURN_IF_ERROR(SetOperandLayout(op1_shape, instruction, 1));
+       ABSL_RETURN_IF_ERROR(SetInstructionLayout(output_shape, instruction));
++    } else if (HloPredicateIsOp<HloOpcode::kFusion>(instruction) &&
++               instruction->fusion_kind() ==
++                   HloInstruction::FusionKind::kCustom) {
++      // A __cudnn$fusion custom call is turned into a kCustom fusion by
++      // CuDnnCustomCallConverter in the pre-SPMD pipeline, so unlike every
++      // other fusion this one already exists here. SetFusionLayouts() rewrites
++      // such a fusion's parameters and root but deliberately leaves the
++      // instructions in between alone, so if the fusion is given a
++      // non-default layout its root ends up with a layout its own operands do
++      // not have and the fused computation stops verifying. Pin the fusion to
++      // the default layout its body was imported with; a copy outside is
++      // cheaper than an inconsistent fusion.
++      auto gpu_config = instruction->backend_config<GpuBackendConfig>();
++      if (gpu_config.ok() &&
++          gpu_config->fusion_backend_config().kind() == kCuDnnFusionKind) {
++        for (int64_t i = 0; i < instruction->operand_count(); ++i) {
++          Shape operand_shape = instruction->operand(i)->shape();
++          LayoutUtil::SetToDefaultLayout(&operand_shape);
++          ABSL_RETURN_IF_ERROR(SetOperandLayout(operand_shape, instruction, i));
++        }
++        Shape output_shape = instruction->shape();
++        LayoutUtil::SetToDefaultLayout(&output_shape);
++        ABSL_RETURN_IF_ERROR(SetInstructionLayout(output_shape, instruction));
++      }
+     } else if (HloPredicateIsOp<HloOpcode::kTranspose>(instruction)) {
+       const HloInstruction* operand = instruction->operand(0);
+       if ((HloPredicateIsNotOp<HloOpcode::kDot>(operand)) ||
+--- a/xla/hlo/transforms/simplifiers/hlo_computation_deduplicator.cc
++++ b/xla/hlo/transforms/simplifiers/hlo_computation_deduplicator.cc
+@@ -96,6 +96,15 @@
+         ContainsLargeConstants(comp)) {
+       continue;
+     }
++    // A fusion computation is owned 1:1 by its fusion instruction
++    // (HloComputation::FusionInstruction()), so it cannot be shared. Merging
++    // two of them repoints the callers but leaves the surviving computation's
++    // FusionInstruction() pointing at only one, which the verifier's
++    // CheckFusionInstruction() then rejects.
++    if (!mark_fusion_duplications_ && comp->IsFusionComputation()) {
++      continue;
++    }
++
+     // Don't deduplicate collectives and non-collectives.
+     if (absl::c_any_of(
+             comp->caller_instructions(), [](const HloInstruction* instr) {
