@@ -81,16 +81,32 @@ struct DotGeneralElementwiseToCuDNNFusion
     // TODO: does cudnn allow returning intermediate results?
     if (!dotGeneral->hasOneUse())
       return failure();
-    // cuDNN's matmul engine needs an actual contraction. A dot_general with no
-    // contracting dimensions is a batched outer product, and cuDNN has no
-    // candidate for it: the fusion builds fine but the compiler later fails
-    // with "No candidates could be compiled" and takes the whole module down.
-    if (dotGeneral.getDotDimensionNumbers()
-            .getLhsContractingDimensions()
-            .empty())
+    // cuDNN's matmul engine needs a real M x K by K x N contraction. Two
+    // degenerate shapes have no candidate, and in both the fusion builds fine
+    // but the GPU compiler later fails with "No candidates could be compiled"
+    // and takes the whole module down:
+    //   * no contracting dimensions at all -- a batched outer product;
+    //   * no free dimensions on a side -- every non-batch dimension is
+    //     contracted, so that side's M (or N) is 1. A batched inner product,
+    //     e.g. dot(bf16[12,1,128,2048], bf16[1,2048,12,128]) with batch
+    //     {0,3}x{2,1} and contracting {2,1}x{3,0} -> bf16[12,2048].
+    auto dims = dotGeneral.getDotDimensionNumbers();
+    if (dims.getLhsContractingDimensions().empty())
       return rewriter.notifyMatchFailure(
           elemOp, "dot_general has no contracting dimensions");
 
+    auto freeRank = [](Value operand, ArrayRef<int64_t> batching,
+                       ArrayRef<int64_t> contracting) {
+      return cast<RankedTensorType>(operand.getType()).getRank() -
+             static_cast<int64_t>(batching.size()) -
+             static_cast<int64_t>(contracting.size());
+    };
+    if (freeRank(dotGeneral.getLhs(), dims.getLhsBatchingDimensions(),
+                 dims.getLhsContractingDimensions()) == 0 ||
+        freeRank(dotGeneral.getRhs(), dims.getRhsBatchingDimensions(),
+                 dims.getRhsContractingDimensions()) == 0)
+      return rewriter.notifyMatchFailure(
+          elemOp, "dot_general has no free dimensions on one side");
 
     ModuleOp mod = elemOp->template getParentOfType<ModuleOp>();
     if (!mod)
